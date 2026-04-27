@@ -1,4 +1,5 @@
 import type { RecordingErrorReason } from '../shared/messages';
+import { transcribe } from '../shared/transcribe';
 import { errorMessage } from '../shared/util';
 
 const LOG = '[speech-to-input/offscreen]';
@@ -70,41 +71,31 @@ async function startRecording(): Promise<void> {
     cleanup();
     if (wasCancelled) return;
     if (collected.length === 0) {
-      void chrome.runtime.sendMessage({
-        type: 'AUDIO_READY',
-        audio: null,
-        mimeType: 'audio/wav',
-        silent: true,
-      });
+      void chrome.runtime.sendMessage({ type: 'TRANSCRIPTION_DONE', text: '' });
       return;
     }
     // The transcription API expects WAV (or OGG); MediaRecorder produces WebM
-    // on Chrome. Decode → resample to 16 kHz mono → encode WAV here so the
-    // background only ever sees a payload the API can ingest.
+    // on Chrome. Decode → resample to 16 kHz mono → encode WAV here, then call
+    // the API directly. Doing the fetch here (instead of forwarding bytes to
+    // the background) sidesteps chrome.runtime.sendMessage's JSON serialization,
+    // which silently drops ArrayBuffer/Blob payloads to '{}'.
     void (async () => {
       try {
         const blob = new Blob(collected, { type: recordedMimeType });
         const wav = await blobToWavBuffer(blob);
         if (!wav) {
-          // Audio was empty or under Whisper's ~100 ms minimum — treat as silent
-          // so the bubble returns to idle without a user-visible error and we
-          // skip an API call that would just rebound with "no audio track found".
-          chrome.runtime.sendMessage({
-            type: 'AUDIO_READY',
-            audio: null,
-            mimeType: 'audio/wav',
-            silent: true,
-          });
+          // Empty or under Whisper's ~100 ms minimum — treat as silent so the
+          // bubble returns to idle and we skip a doomed API call.
+          chrome.runtime.sendMessage({ type: 'TRANSCRIPTION_DONE', text: '' });
           return;
         }
-        chrome.runtime.sendMessage({
-          type: 'AUDIO_READY',
-          audio: wav,
-          mimeType: 'audio/wav',
-          silent,
-        });
+        const text = await transcribe(new Blob([wav], { type: 'audio/wav' }), silent);
+        chrome.runtime.sendMessage({ type: 'TRANSCRIPTION_DONE', text });
       } catch (err) {
-        sendError('unknown', `audio conversion failed: ${errorMessage(err)}`);
+        chrome.runtime.sendMessage({
+          type: 'TRANSCRIPTION_FAILED',
+          message: errorMessage(err),
+        });
       }
     })();
   };

@@ -1,5 +1,4 @@
 import type { ExtensionMessage, RecordingErrorReason } from '../shared/messages';
-import { transcribe } from '../shared/transcribe';
 import { errorMessage } from '../shared/util';
 
 const LOG = '[speech-to-input/bg]';
@@ -87,22 +86,18 @@ async function handleCancelRecording(senderTabId: number | undefined): Promise<v
   activeTabId = null;
 }
 
-async function handleAudioFromOffscreen(
-  audio: ArrayBuffer | null,
-  mimeType: string,
-  silent: boolean
-): Promise<void> {
+async function handleTranscriptionDone(text: string): Promise<void> {
   if (activeTabId === null) return;
   const tabId = activeTabId;
-  try {
-    const blob = audio ? new Blob([audio], { type: mimeType }) : null;
-    const text = await transcribe(blob, silent);
-    await sendToTab(tabId, { type: 'TRANSCRIPTION_RESULT', text });
-  } catch (err) {
-    await reportError(tabId, 'transcription_failed', errorMessage(err));
-  } finally {
-    activeTabId = null;
-  }
+  activeTabId = null;
+  await sendToTab(tabId, { type: 'TRANSCRIPTION_RESULT', text });
+}
+
+async function handleTranscriptionFailed(message: string): Promise<void> {
+  if (activeTabId === null) return;
+  const tabId = activeTabId;
+  activeTabId = null;
+  await reportError(tabId, 'transcription_failed', message);
 }
 
 async function reportError(
@@ -114,18 +109,18 @@ async function reportError(
 }
 
 type RoutedMessage = ExtensionMessage & { target?: 'offscreen' | 'background' };
-type AudioReadyMessage = {
-  type: 'AUDIO_READY';
-  audio: ArrayBuffer | null;
-  mimeType: string;
-  silent: boolean;
-};
+type TranscriptionDoneMessage = { type: 'TRANSCRIPTION_DONE'; text: string };
+type TranscriptionFailedMessage = { type: 'TRANSCRIPTION_FAILED'; message: string };
 type OffscreenError = {
   type: 'OFFSCREEN_ERROR';
   reason: RecordingErrorReason;
   message?: string;
 };
-type IncomingMessage = RoutedMessage | AudioReadyMessage | OffscreenError;
+type IncomingMessage =
+  | RoutedMessage
+  | TranscriptionDoneMessage
+  | TranscriptionFailedMessage
+  | OffscreenError;
 
 chrome.runtime.onMessage.addListener((raw, sender, sendResponse) => {
   const msg = raw as IncomingMessage;
@@ -143,8 +138,11 @@ chrome.runtime.onMessage.addListener((raw, sender, sendResponse) => {
     case 'CANCEL_RECORDING':
       void handleCancelRecording(sender.tab?.id);
       break;
-    case 'AUDIO_READY':
-      void handleAudioFromOffscreen(msg.audio, msg.mimeType, msg.silent);
+    case 'TRANSCRIPTION_DONE':
+      void handleTranscriptionDone(msg.text);
+      break;
+    case 'TRANSCRIPTION_FAILED':
+      void handleTranscriptionFailed(msg.message);
       break;
     case 'OFFSCREEN_ERROR':
       if (activeTabId !== null) {

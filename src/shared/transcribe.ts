@@ -16,11 +16,15 @@ interface TranscribeResult {
  * transcript. Returns '' when the recording is silent or empty so the caller
  * can no-op without raising an error to the user.
  */
+const LOG = '[speech-to-input/transcribe]';
+
 export async function transcribe(audio: Blob | null, silent: boolean): Promise<string> {
   if (silent || !audio || audio.size === 0) return '';
 
   const authHeaders = await getAuthHeaders();
   const contentType = audio.type || 'audio/wav';
+
+  console.log(LOG, 'POST', { bytes: audio.size, contentType });
 
   let resp: Response;
   try {
@@ -36,15 +40,15 @@ export async function transcribe(audio: Blob | null, silent: boolean): Promise<s
 
   if (!resp.ok) {
     const body = await resp.text().catch(() => '');
+    console.error(LOG, 'response', resp.status, resp.statusText, body);
     throw new Error(`Transcription failed (${resp.status}): ${body || resp.statusText}`);
   }
 
   const result = (await resp.json()) as TranscribeResult;
-  console.log(
-    '[transcribe] audio_ms=%d total_ms=%d groq_ms=%d',
-    result.audio_ms,
-    result.timing.total_ms,
-    result.timing.groq_ms
-  );
+  console.log(LOG, 'OK', {
+    audio_ms: result.audio_ms,
+    total_ms: result.timing.total_ms,
+    groq_ms: result.timing.groq_ms,
+  });
   return result.text;
 }
