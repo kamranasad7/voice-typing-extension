@@ -8,10 +8,10 @@ export default defineManifest({
     'Hold Ctrl+Shift+Space, speak, and the transcribed text is written into the active input field.',
   minimum_chrome_version: '116',
   icons: {
-    16: 'src/assets/verba-logo.webp',
-    32: 'src/assets/verba-logo.webp',
-    48: 'src/assets/verba-logo.webp',
-    128: 'src/assets/verba-logo.webp',
+    16: 'src/assets/verba-logo-16.png',
+    32: 'src/assets/verba-logo-32.png',
+    48: 'src/assets/verba-logo-48.png',
+    128: 'src/assets/verba-logo-128.png',
   },
   background: {
     service_worker: 'src/background/index.ts',
@@ -25,10 +25,19 @@ export default defineManifest({
       all_frames: false,
     },
   ],
-  permissions: ['offscreen'],
+  permissions: ['offscreen', 'favicon'],
   host_permissions: ['<all_urls>'],
   options_ui: {
     page: 'src/options/index.html',
     open_in_tab: true,
   },
+  web_accessible_resources: [
+    {
+      // Lets the content-script bubble load chrome's cached favicon for the
+      // current tab as a chrome-extension:// URL, bypassing page CSPs that
+      // would otherwise block <img src="https://site/favicon.ico">.
+      resources: ['_favicon/*'],
+      matches: ['<all_urls>'],
+    },
+  ],
 });

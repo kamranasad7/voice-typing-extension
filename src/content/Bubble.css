@@ -151,6 +151,31 @@
 .stop-btn:hover { background: rgba(255, 255, 255, 0.24); }
 .bubble.listening .stop-btn { display: flex; }
 
+.stop-icon {
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  object-fit: contain;
+  display: block;
+  pointer-events: none;
+}
+
+.stop-letter {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  background: rgba(176, 108, 255, 0.22);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0;
+  pointer-events: none;
+}
+
 .label { letter-spacing: 0.2px; }
 .bubble.listening .label { display: none; }
 .bubble.processing .label {

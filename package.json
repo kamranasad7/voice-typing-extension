@@ -9,12 +9,14 @@
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "check": "svelte-check"
+    "check": "svelte-check",
+    "icons": "node scripts/build-icons.mjs"
   },
   "devDependencies": {
     "@crxjs/vite-plugin": "^2.0.0-beta.25",
     "@sveltejs/vite-plugin-svelte": "^4.0.4",
     "@types/chrome": "^0.0.268",
+    "sharp": "^0.34.5",
     "svelte": "^5.55.5",
     "svelte-check": "^4.4.6",
     "typescript": "^5.4.5",
