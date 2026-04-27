@@ -1,6 +1,9 @@
 import { bubble } from './bubble';
 import { isWritableTarget, writeToTarget } from './inputWriter';
 import type { ExtensionMessage, RecordingErrorReason } from '../shared/messages';
+import { errorMessage } from '../shared/util';
+
+const LOG = '[speech-to-input]';
 
 const HOTKEY = {
   code: 'Space',
@@ -108,14 +111,16 @@ function handleResult(text: string): void {
 
 function showError(reason: RecordingErrorReason, message?: string): void {
   bubble.setState('error', labelForReason(reason));
-  if (message) console.warn('[speech-to-input]', reason, message);
+  if (message) console.warn(LOG, reason, message);
 }
 
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+function resetRecordingState(): void {
+  isRecording = false;
+  recordingMode = null;
+  capturedTarget = null;
 }
 
-console.log('[speech-to-input] content script loaded');
+console.log(LOG, 'content script loaded');
 bubble.init();
 
 bubble.onRecordRequest = () => {
@@ -143,7 +148,6 @@ document.addEventListener(
   (e) => {
     if (!matchesHotkey(e)) return;
     if (e.repeat) return;
-    console.log('[speech-to-input] hotkey pressed');
     e.preventDefault();
     void startRecording('hotkey');
   },
@@ -176,8 +180,10 @@ chrome.runtime.onMessage.addListener((raw, _sender, sendResponse) => {
   if (msg.type === 'TRANSCRIPTION_RESULT') {
     handleResult(msg.text);
   } else if (msg.type === 'RECORDING_ERROR') {
-    // Prefer the friendly label for known reasons; raw browser strings like
-    // "Permission dismissed" are not actionable to the user.
+    // Reset local recording state — without this, isRecording stays true after
+    // the bubble auto-reverts and subsequent hotkey presses are silently
+    // ignored by the `if (isRecording) return` guard in startRecording.
+    resetRecordingState();
     showError(msg.reason, msg.message);
   }
   sendResponse?.(undefined);

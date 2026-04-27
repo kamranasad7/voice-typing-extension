@@ -1,4 +1,7 @@
 import type { RecordingErrorReason } from '../shared/messages';
+import { errorMessage } from '../shared/util';
+
+const LOG = '[speech-to-input/offscreen]';
 
 type RoutedMessage =
   | { type: 'START_RECORDING'; target: 'offscreen' }
@@ -50,15 +53,18 @@ async function startRecording(): Promise<void> {
   startAmplitudeMonitor(mediaStream);
 
   const mimeType = pickSupportedMimeType();
-  recorder = mimeType ? new MediaRecorder(mediaStream, { mimeType }) : new MediaRecorder(mediaStream);
+  const localRecorder = mimeType
+    ? new MediaRecorder(mediaStream, { mimeType })
+    : new MediaRecorder(mediaStream);
+  recorder = localRecorder;
 
-  recorder.addEventListener('dataavailable', (e) => {
+  localRecorder.addEventListener('dataavailable', (e) => {
     if (e.data && e.data.size > 0) chunks.push(e.data);
   });
 
-  recorder.addEventListener('stop', () => {
+  const onStop = () => {
     const silent = peakAmplitude < SILENCE_THRESHOLD;
-    const recordedMimeType = recorder?.mimeType ?? 'audio/webm';
+    const recordedMimeType = localRecorder.mimeType || 'audio/webm';
     const wasCancelled = cancelled;
     const collected = chunks;
     cleanup();
@@ -68,7 +74,7 @@ async function startRecording(): Promise<void> {
         type: 'AUDIO_READY',
         audio: null,
         mimeType: 'audio/wav',
-        silent,
+        silent: true,
       });
       return;
     }
@@ -79,6 +85,18 @@ async function startRecording(): Promise<void> {
       try {
         const blob = new Blob(collected, { type: recordedMimeType });
         const wav = await blobToWavBuffer(blob);
+        if (!wav) {
+          // Audio was empty or under Whisper's ~100 ms minimum — treat as silent
+          // so the bubble returns to idle without a user-visible error and we
+          // skip an API call that would just rebound with "no audio track found".
+          chrome.runtime.sendMessage({
+            type: 'AUDIO_READY',
+            audio: null,
+            mimeType: 'audio/wav',
+            silent: true,
+          });
+          return;
+        }
         chrome.runtime.sendMessage({
           type: 'AUDIO_READY',
           audio: wav,
@@ -89,17 +107,19 @@ async function startRecording(): Promise<void> {
         sendError('unknown', `audio conversion failed: ${errorMessage(err)}`);
       }
     })();
-  });
+  };
 
-  recorder.addEventListener('error', (e) => {
-    // Mark cancelled so the trailing 'stop' event (which still fires after
-    // cleanup) doesn't try to ship a half-baked buffer to the background.
-    cancelled = true;
+  localRecorder.addEventListener('stop', onStop);
+
+  localRecorder.addEventListener('error', (e) => {
+    // Detach 'stop' so the trailing event (which fires after error per spec)
+    // doesn't try to ship a half-baked buffer once cleanup() has run.
+    localRecorder.removeEventListener('stop', onStop);
     sendError('unknown', `Recorder error: ${(e as ErrorEvent).message ?? 'unknown'}`);
     cleanup();
   });
 
-  recorder.start();
+  localRecorder.start();
   starting = false;
 }
 
@@ -170,7 +190,7 @@ function cleanup(): void {
 function pickSupportedMimeType(): string | undefined {
   const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'];
   for (const type of candidates) {
-    if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(type)) return type;
+    if (MediaRecorder.isTypeSupported(type)) return type;
   }
   return undefined;
 }
@@ -178,13 +198,21 @@ function pickSupportedMimeType(): string | undefined {
 // 16 kHz mono PCM is what Whisper uses natively. Resampling here keeps the
 // payload small (~32 KB/s) and matches the model's expected input rate.
 const TARGET_SAMPLE_RATE = 16000;
+// Whisper's documented minimum clip length is ~100 ms; below that the API
+// rejects with "no audio track found in file" after a wasted round trip.
+const MIN_SAMPLES = TARGET_SAMPLE_RATE / 10;
 
-async function blobToWavBuffer(blob: Blob): Promise<ArrayBuffer> {
+async function blobToWavBuffer(blob: Blob): Promise<ArrayBuffer | null> {
   const ac = new AudioContext();
   try {
     const inputBuffer = await blob.arrayBuffer();
     const decoded = await ac.decodeAudioData(inputBuffer);
+    if (decoded.length === 0) return null;
     const resampled = await downmixAndResample(decoded, TARGET_SAMPLE_RATE);
+    if (resampled.length < MIN_SAMPLES) {
+      console.log(LOG, 'audio too short for transcription', resampled.length, 'samples');
+      return null;
+    }
     return audioBufferToWav(resampled);
   } finally {
     void ac.close().catch(() => { /* ignore */ });
@@ -246,10 +274,6 @@ function writeAscii(view: DataView, offset: number, str: string): void {
 
 function sendError(reason: RecordingErrorReason, message: string): void {
   void chrome.runtime.sendMessage({ type: 'OFFSCREEN_ERROR', reason, message });
-}
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }
 
 chrome.runtime.onMessage.addListener((raw, _sender, sendResponse) => {

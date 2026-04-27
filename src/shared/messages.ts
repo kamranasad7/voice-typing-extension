@@ -11,6 +11,3 @@ export type RecordingErrorReason =
   | 'no_active_input'
   | 'transcription_failed'
   | 'unknown';
-
-export const send = (message: ExtensionMessage): Promise<unknown> =>
-  chrome.runtime.sendMessage(message);

@@ -1,6 +1,8 @@
 import type { ExtensionMessage, RecordingErrorReason } from '../shared/messages';
 import { transcribe } from '../shared/transcribe';
+import { errorMessage } from '../shared/util';
 
+const LOG = '[speech-to-input/bg]';
 const OFFSCREEN_PATH = 'src/offscreen/index.html';
 
 // Tracks the tab that initiated the current recording so we can route results back.
@@ -35,7 +37,7 @@ async function sendToTab(tabId: number, message: ExtensionMessage): Promise<void
   try {
     await chrome.tabs.sendMessage(tabId, message);
   } catch (err) {
-    console.warn('[bg] failed to send message to tab', tabId, err);
+    console.warn(LOG, 'failed to send message to tab', tabId, err);
   }
 }
 
@@ -44,7 +46,6 @@ async function sendToOffscreen(message: ExtensionMessage): Promise<unknown> {
 }
 
 async function handleStartRecording(tabId: number): Promise<void> {
-  console.log('[bg] START_RECORDING received from tab', tabId);
   if (activeTabId !== null && activeTabId !== tabId) {
     // Another tab already owns the mic — reject this start cleanly so the
     // requesting bubble drops back to idle instead of hanging.
@@ -54,10 +55,9 @@ async function handleStartRecording(tabId: number): Promise<void> {
   activeTabId = tabId;
   try {
     await ensureOffscreenDocument();
-    console.log('[bg] offscreen ready, forwarding START');
     await sendToOffscreen({ type: 'START_RECORDING' });
   } catch (err) {
-    console.error('[bg] start recording failed', err);
+    console.error(LOG, 'start recording failed', err);
     await reportError(tabId, 'mic_unavailable', errorMessage(err));
     activeTabId = null;
   }
@@ -71,7 +71,7 @@ async function handleStopRecording(senderTabId: number | undefined): Promise<voi
     // Offscreen will reply via runtime.sendMessage with 'TRANSCRIPTION_RESULT' or 'RECORDING_ERROR'
     await sendToOffscreen({ type: 'STOP_RECORDING' });
   } catch (err) {
-    console.error('[bg] stop recording failed', err);
+    console.error(LOG, 'stop recording failed', err);
     await reportError(tabId, 'unknown', errorMessage(err));
     activeTabId = null;
   }
@@ -113,10 +113,6 @@ async function reportError(
   await sendToTab(tabId, { type: 'RECORDING_ERROR', reason, message });
 }
 
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
 type RoutedMessage = ExtensionMessage & { target?: 'offscreen' | 'background' };
 type AudioReadyMessage = {
   type: 'AUDIO_READY';
@@ -137,34 +133,27 @@ chrome.runtime.onMessage.addListener((raw, sender, sendResponse) => {
   // Messages targeted at the offscreen document are not for us.
   if ('target' in msg && msg.target === 'offscreen') return false;
 
-  if (msg.type === 'START_RECORDING' && sender.tab?.id !== undefined) {
-    void handleStartRecording(sender.tab.id);
-    sendResponse(undefined);
-    return false;
+  switch (msg.type) {
+    case 'START_RECORDING':
+      if (sender.tab?.id !== undefined) void handleStartRecording(sender.tab.id);
+      break;
+    case 'STOP_RECORDING':
+      void handleStopRecording(sender.tab?.id);
+      break;
+    case 'CANCEL_RECORDING':
+      void handleCancelRecording(sender.tab?.id);
+      break;
+    case 'AUDIO_READY':
+      void handleAudioFromOffscreen(msg.audio, msg.mimeType, msg.silent);
+      break;
+    case 'OFFSCREEN_ERROR':
+      if (activeTabId !== null) {
+        void reportError(activeTabId, msg.reason, msg.message);
+        activeTabId = null;
+      }
+      break;
   }
-  if (msg.type === 'STOP_RECORDING') {
-    void handleStopRecording(sender.tab?.id);
-    sendResponse(undefined);
-    return false;
-  }
-  if (msg.type === 'CANCEL_RECORDING') {
-    void handleCancelRecording(sender.tab?.id);
-    sendResponse(undefined);
-    return false;
-  }
-  if (msg.type === 'AUDIO_READY') {
-    void handleAudioFromOffscreen(msg.audio, msg.mimeType, msg.silent);
-    sendResponse(undefined);
-    return false;
-  }
-  if (msg.type === 'OFFSCREEN_ERROR') {
-    if (activeTabId !== null) {
-      void reportError(activeTabId, msg.reason, msg.message);
-      activeTabId = null;
-    }
-    sendResponse(undefined);
-    return false;
-  }
+  sendResponse(undefined);
   return false;
 });
 
