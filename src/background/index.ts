@@ -1,5 +1,5 @@
 import type { ExtensionMessage, RecordingErrorReason } from '../shared/messages';
-import { dummyTranscribe } from '../shared/dummyTranscribe';
+import { transcribe } from '../shared/transcribe';
 
 const OFFSCREEN_PATH = 'src/offscreen/index.html';
 
@@ -96,7 +96,7 @@ async function handleAudioFromOffscreen(
   const tabId = activeTabId;
   try {
     const blob = audio ? new Blob([audio], { type: mimeType }) : null;
-    const text = await dummyTranscribe(blob, silent);
+    const text = await transcribe(blob, silent);
     await sendToTab(tabId, { type: 'TRANSCRIPTION_RESULT', text });
   } catch (err) {
     await reportError(tabId, 'transcription_failed', errorMessage(err));

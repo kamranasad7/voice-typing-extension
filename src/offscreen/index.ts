@@ -58,20 +58,37 @@ async function startRecording(): Promise<void> {
 
   recorder.addEventListener('stop', () => {
     const silent = peakAmplitude < SILENCE_THRESHOLD;
-    const mimeType = recorder?.mimeType ?? 'audio/webm';
+    const recordedMimeType = recorder?.mimeType ?? 'audio/webm';
     const wasCancelled = cancelled;
     const collected = chunks;
     cleanup();
     if (wasCancelled) return;
     if (collected.length === 0) {
-      void chrome.runtime.sendMessage({ type: 'AUDIO_READY', audio: null, mimeType, silent });
+      void chrome.runtime.sendMessage({
+        type: 'AUDIO_READY',
+        audio: null,
+        mimeType: 'audio/wav',
+        silent,
+      });
       return;
     }
-    // Blob is not structured-cloneable across runtime.sendMessage — convert to
-    // ArrayBuffer so the bytes actually arrive at the background worker.
-    void new Blob(collected, { type: mimeType }).arrayBuffer().then((buf) => {
-      chrome.runtime.sendMessage({ type: 'AUDIO_READY', audio: buf, mimeType, silent });
-    });
+    // The transcription API expects WAV (or OGG); MediaRecorder produces WebM
+    // on Chrome. Decode → resample to 16 kHz mono → encode WAV here so the
+    // background only ever sees a payload the API can ingest.
+    void (async () => {
+      try {
+        const blob = new Blob(collected, { type: recordedMimeType });
+        const wav = await blobToWavBuffer(blob);
+        chrome.runtime.sendMessage({
+          type: 'AUDIO_READY',
+          audio: wav,
+          mimeType: 'audio/wav',
+          silent,
+        });
+      } catch (err) {
+        sendError('unknown', `audio conversion failed: ${errorMessage(err)}`);
+      }
+    })();
   });
 
   recorder.addEventListener('error', (e) => {
@@ -156,6 +173,75 @@ function pickSupportedMimeType(): string | undefined {
     if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(type)) return type;
   }
   return undefined;
+}
+
+// 16 kHz mono PCM is what Whisper uses natively. Resampling here keeps the
+// payload small (~32 KB/s) and matches the model's expected input rate.
+const TARGET_SAMPLE_RATE = 16000;
+
+async function blobToWavBuffer(blob: Blob): Promise<ArrayBuffer> {
+  const ac = new AudioContext();
+  try {
+    const inputBuffer = await blob.arrayBuffer();
+    const decoded = await ac.decodeAudioData(inputBuffer);
+    const resampled = await downmixAndResample(decoded, TARGET_SAMPLE_RATE);
+    return audioBufferToWav(resampled);
+  } finally {
+    void ac.close().catch(() => { /* ignore */ });
+  }
+}
+
+async function downmixAndResample(buf: AudioBuffer, targetRate: number): Promise<AudioBuffer> {
+  if (buf.sampleRate === targetRate && buf.numberOfChannels === 1) return buf;
+  const length = Math.max(1, Math.ceil(buf.duration * targetRate));
+  const offline = new OfflineAudioContext({
+    numberOfChannels: 1,
+    length,
+    sampleRate: targetRate,
+  });
+  const src = offline.createBufferSource();
+  src.buffer = buf;
+  src.connect(offline.destination);
+  src.start();
+  return offline.startRendering();
+}
+
+function audioBufferToWav(buf: AudioBuffer): ArrayBuffer {
+  const channels = 1;
+  const sampleRate = buf.sampleRate;
+  const samples = buf.getChannelData(0);
+  const bytesPerSample = 2;
+  const blockAlign = channels * bytesPerSample;
+  const dataSize = samples.length * bytesPerSample;
+  const totalSize = 44 + dataSize;
+
+  const ab = new ArrayBuffer(totalSize);
+  const view = new DataView(ab);
+
+  writeAscii(view, 0, 'RIFF');
+  view.setUint32(4, totalSize - 8, true);
+  writeAscii(view, 8, 'WAVE');
+  writeAscii(view, 12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); // PCM format
+  view.setUint16(22, channels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * blockAlign, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, 16, true);
+  writeAscii(view, 36, 'data');
+  view.setUint32(40, dataSize, true);
+
+  let offset = 44;
+  for (let i = 0; i < samples.length; i++, offset += 2) {
+    const s = Math.max(-1, Math.min(1, samples[i]!));
+    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+  }
+  return ab;
+}
+
+function writeAscii(view: DataView, offset: number, str: string): void {
+  for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
 }
 
 function sendError(reason: RecordingErrorReason, message: string): void {
