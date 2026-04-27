@@ -7,6 +7,12 @@ export default defineManifest({
   description:
     'Hold Ctrl+Shift+Space, speak, and the transcribed text is written into the active input field.',
   minimum_chrome_version: '116',
+  icons: {
+    16: 'src/assets/verba-logo.webp',
+    32: 'src/assets/verba-logo.webp',
+    48: 'src/assets/verba-logo.webp',
+    128: 'src/assets/verba-logo.webp',
+  },
   background: {
     service_worker: 'src/background/index.ts',
     type: 'module',
